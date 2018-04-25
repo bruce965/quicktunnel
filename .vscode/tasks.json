@@ -10,6 +10,32 @@
 				"${workspaceFolder}/QuickTunnel.sln"
 			],
 			"problemMatcher": "$msCompile"
+		},
+		{
+			"label": "publish win-x64",
+			"command": "dotnet",
+			"type": "process",
+			"args": [
+				"publish",
+				"--configuration=Release",
+				"--self-contained",
+				"--runtime=win-x64",
+				"${workspaceFolder}/QuickTunnel.sln"
+			],
+			"problemMatcher": "$msCompile"
+		},
+		{
+			"label": "publish linux-x64",
+			"command": "dotnet",
+			"type": "process",
+			"args": [
+				"publish",
+				"--configuration=Release",
+				"--self-contained",
+				"--runtime=linux-x64",
+				"${workspaceFolder}/QuickTunnel.sln"
+			],
+			"problemMatcher": "$msCompile"
 		}
 	]
 }

@@ -225,7 +225,7 @@ namespace QuickTunnel
 					EndPort = endPort,
 					Remote = match.Groups["remote"].Value,
 					RemotePort = remotePort,
-					Parameters = (parameters == "") ? new string[0] : parameters.Split(",")
+					Parameters = (parameters == "") ? new string[0] : parameters.Split(',')
 				};
 				return true;
 			}

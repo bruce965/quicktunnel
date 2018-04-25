@@ -54,7 +54,10 @@ namespace QuickTunnel
 							{
 								// TODO: make a sliding window buffer
 
-								var count = await downstreamClient.Client.ReceiveAsync(buffer, SocketFlags.None);
+								var count = await Task.Factory.FromAsync(
+									downstreamClient.Client.BeginReceive(buffer, 0, buffer.Length, SocketFlags.None, null, null),
+									downstreamClient.Client.EndReceive
+								);
 								if (count == 0)
 									break;
 
@@ -98,7 +101,10 @@ namespace QuickTunnel
 							{
 								// TODO: make a sliding window buffer
 
-								var count = await upstreamClient.Client.ReceiveAsync(buffer, SocketFlags.None);
+								var count = await Task.Factory.FromAsync(
+									upstreamClient.Client.BeginReceive(buffer, 0, buffer.Length, SocketFlags.None, null, null),
+									upstreamClient.Client.EndReceive
+								);
 								if (count == 0)
 									break;
 
