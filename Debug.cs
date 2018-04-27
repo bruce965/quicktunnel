@@ -31,6 +31,33 @@ namespace QuickTunnel
 		public static void PrintReceived(string protocol, string remoteHostname, int remotePort, int localPort, byte[] data, int offset, int count) => printPacket(false, protocol, remoteHostname + ':' + remotePort, localPort, data, offset, count);
 		public static void PrintReceived(string protocol, string remote, int localPort, byte[] data, int offset, int count) => printPacket(false, protocol, remote, localPort, data, offset, count);
 		
+		public static void PrintError(Exception e) => PrintError(e, null);
+		public static void PrintError(Exception e, string message)
+		{
+			try
+			{
+				lock (lockme)
+				{
+					// TODO: do not lock, preserve print order between threads
+
+					// ! 2018-07-18 07:11:02.3106 Exception (message): exception message
+
+					Console.Error.WriteLine(
+						"! {0} {1}{2}: {3}",
+						DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.ffff"),
+						e.GetType().Name,
+						(message == null) ? "" : String.Format(" ({0})", message),
+						e.Message
+					);
+					Console.Error.WriteLine();
+				}
+			}
+			catch (Exception)
+			{
+				// not a big deal
+			}
+		}
+
 		static void printIncomingConnection(bool isConnected, string protocol, string remote, int localPort)
 		{
 			try

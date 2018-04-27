@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -20,8 +21,17 @@ namespace QuickTunnel
 			public int EndPort;
 			public string Remote;
 			public int RemotePort;
-			public string[] Parameters;
+			public (string key, string value)[] Parameters;
+
+			public bool HasParameter(string key) => Parameters.Where(p => String.Equals(p.key, key, StringComparison.OrdinalIgnoreCase)).Any();
+			public string GetParameter(string key, string deflt) => Parameters.Where(p => String.Equals(p.key, key, StringComparison.OrdinalIgnoreCase) && p.value != null).Select(p => p.value).DefaultIfEmpty(deflt).First();
+			public string GetParameter(string key) => GetParameter(key, null);
 		}
+
+		static readonly string[] VALID_PARAMETERS = new[] {
+			"timeout",
+			"debug"
+		};
 
 		static void Main(string[] args)
 		{
@@ -36,7 +46,7 @@ namespace QuickTunnel
 				{
 					var executableName = Path.GetFileNameWithoutExtension(Assembly.GetEntryAssembly().CodeBase);
 
-					Console.Error.WriteLine("QuickTunnel v0.1 - Redirect TCP streams and UDP datagrams to/from the running machine.");
+					Console.Error.WriteLine("QuickTunnel v{0} - Redirect TCP streams and UDP datagrams to/from the running machine.", typeof(Program).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>().InformationalVersion);
 					Console.Error.WriteLine("Copyright (c) Fabio Iotti 2018. Licensed under the terms of the MIT License.");
 					Console.Error.WriteLine();
 					Console.Error.WriteLine("Usage:");
@@ -53,6 +63,7 @@ namespace QuickTunnel
 					// Console.Error.WriteLine("  fail                   shutdown if unable to connect to remote, the alternative is rejecting incoming connections, TCP only");
 					// Console.Error.WriteLine("  limit=number           limit maximum number of concurrent connections, TCP only");
 					// Console.Error.WriteLine("  queue                  accept and enqueue connections over the limit, TCP only");
+					Console.Error.WriteLine("  timeout=number         seconds to wait before dropping an unused connection, default is 300, UDP only");
 					// Console.Error.WriteLine("  delay=min[-max]        delay transmission of packets between min and optionally max milliseconds");
 					// Console.Error.WriteLine("  drop=percent[-out]     drop a percentage of packets randomly, optionally an alternate percentage for outgoing packets, value between 0 and 100, UDP only");
 					// Console.Error.WriteLine("  speed=bytesec[-out]    limit maximum throughput to a specific number of bytes/second, optionally an alternate speed for outgoing packets");
@@ -81,15 +92,16 @@ namespace QuickTunnel
 					// Console.Error.WriteLine("  {0} 80:server1 80:server2           balance requests on TCP port 80 between server1 and server2 on same port", executableName);
 					// Console.Error.WriteLine("  {0} 80:server:8080 80:server:8081   balance requests on TCP port 80 between ports 8080 and 8081 of server", executableName);
 					// Console.Error.WriteLine();
-					// Console.Error.WriteLine("  -- Parameters --");
+					Console.Error.WriteLine("  -- Parameters --");
 					// Console.Error.WriteLine("  {0} 1234:example.com(immediate)     connect to example.com on TCP port 1234 and redirect incoming requests on same port, open more connections if necessary", executableName);
 					// Console.Error.WriteLine("  {0} 1000:server(immediate,fail)     connect to server on TCP port 1234 and redirect incoming requests on same port, shutdown if server is down", executableName);
 					// Console.Error.WriteLine("  {0} 1234:192.168.1.1(persistent)    redirect requests on TCP port 1234 to 192.168.1.1 and keep connections alive, open more connections if necessary", executableName);
 					// Console.Error.WriteLine("  {0} 1234:192.168.1.1(close)         redirect requests on TCP port 1234 to 192.168.1.1 and shutdown after all connections are closed", executableName);
 					// Console.Error.WriteLine("  {0} 80:example.com(limit=10)        redirect up to 10 parallel requests on TCP port 80 to example.com on same port, connections over the limit are dropped", executableName);
 					// Console.Error.WriteLine("  {0} 80:example.com(queue,limit=3)   redirect up to 3 parallel requests on TCP port 80 to example.com on same port, connections over the limit are enqueued", executableName);
+					Console.Error.WriteLine("  {0} udp:*:123:example(timeout=60)   delete UDP port-to-port relations after 60 seconds", executableName);
 					// Console.Error.WriteLine();
-					Console.Error.WriteLine("  -- Debugging --");
+					// Console.Error.WriteLine("  -- Debugging --");
 					// Console.Error.WriteLine("  {0} 80:example.com(delay=100-200)   simulate a latency between 100 and 200 milliseconds", executableName);
 					// Console.Error.WriteLine("  {0} udp:*:3000:server(drop=30)      randomly drop 30% of the packets", executableName);
 					// Console.Error.WriteLine("  {0} udp:*:3000:server(drop=10-20)   randomly drop 10% of the incoming and 20% of the outgoing packets", executableName);
@@ -123,14 +135,20 @@ namespace QuickTunnel
 				// build and start routes
 				foreach (var route in routes)
 				{
-					var invalidParameters = route.Parameters.Except(new[] { "debug" }, StringComparer.OrdinalIgnoreCase);
+					var invalidParameters = route.Parameters.Select(p => p.key).Except(VALID_PARAMETERS, StringComparer.OrdinalIgnoreCase);
 					if (invalidParameters.Any()) {
 						Console.Error.WriteLine("Invalid parameter: {0}", invalidParameters.First());
 						Environment.ExitCode = 5;
 						return;
 					}
 
-					var isDebug = route.Parameters.Contains("debug", StringComparer.OrdinalIgnoreCase);
+					var isDebug = route.HasParameter("debug");
+
+					if (!Int32.TryParse(route.GetParameter("timeout", "300"), NumberStyles.Integer, CultureInfo.InvariantCulture, out var timeout)) {
+						Console.Error.WriteLine("Invalid timeout: {0}", route.GetParameter("timeout"));
+						Environment.ExitCode = 5;
+						return;
+					}
 
 					switch (route.Protocol)
 					{
@@ -153,7 +171,7 @@ namespace QuickTunnel
 							{
 								foreach (var port in Enumerable.Range(route.Port, route.EndPort - route.Port + 1))
 								{
-									stuff.Add(new UdpAnyToEndSocketTunnel(route.Remote, route.RemotePort - route.Port + port, port, isDebug));
+									stuff.Add(new UdpAnyToEndSocketTunnel(route.Remote, route.RemotePort - route.Port + port, port, isDebug, TimeSpan.FromSeconds(timeout)));
 								}
 							}
 							else
@@ -225,7 +243,10 @@ namespace QuickTunnel
 					EndPort = endPort,
 					Remote = match.Groups["remote"].Value,
 					RemotePort = remotePort,
-					Parameters = (parameters == "") ? new string[0] : parameters.Split(',')
+					Parameters = parameters.Split(',', StringSplitOptions.RemoveEmptyEntries)
+						.Select(p => p.Split('='))
+						.Select(g => (g[0], g.Length > 1 ? g[1] : null))
+						.ToArray()
 				};
 				return true;
 			}

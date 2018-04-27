@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace QuickTunnel
@@ -11,9 +12,9 @@ namespace QuickTunnel
 	{
 		readonly object lockme = new object();
 		readonly UdpClient client;
-		readonly Dictionary<SocketAddress, (UdpClient, int)> connected = new Dictionary<SocketAddress, (UdpClient, int)>();
+		readonly Dictionary<SocketAddress, (UdpClient client, int port, Box<CancellationTokenSource> cancelLastTimeout)> connected = new Dictionary<SocketAddress, (UdpClient, int, Box<CancellationTokenSource>)>();
 
-		public UdpAnyToEndSocketTunnel(string remoteHostname, int remotePort, int localPort, bool debug)
+		public UdpAnyToEndSocketTunnel(string remoteHostname, int remotePort, int localPort, bool debug, TimeSpan timeout)
 		{
 			// `client` will be used to receive/send messages from/to downstream (the client connecting to remote through this tunnel)
 			client = new UdpClient(new IPEndPoint(IPAddress.Any, localPort))
@@ -24,7 +25,7 @@ namespace QuickTunnel
 
 			Task.Run(async () =>
 			{
-				while (true)
+				while (client.Client.IsBound)
 				{
 					// here we receive messages from the remote clients connecting to the remote through this tunnel
 					var downstreamDatagram = await client.ReceiveAsync();
@@ -36,6 +37,7 @@ namespace QuickTunnel
 					// then we register a client `thisClient` for the specific sender
 					UdpClient thisClient;
 					int thisPort;
+					Box<CancellationTokenSource> cancelLastTimeout;
 
 					lock (lockme)
 					{
@@ -45,19 +47,25 @@ namespace QuickTunnel
 							// `thisClient` will be used to receive/send messages from/to upstream (the remote we tunnel to)
 							thisClient = new UdpClient(new IPEndPoint(IPAddress.Any, 0));  // 0 = random free ephemeral port
 							thisPort = ((IPEndPoint)thisClient.Client.LocalEndPoint).Port;
+							cancelLastTimeout = new Box<CancellationTokenSource>(null);
 
-							connected.Add(remoteAddress, (thisClient, thisPort));
+							connected.Add(remoteAddress, thisConnection = (thisClient, thisPort, cancelLastTimeout));
 
 							Task.Run(async () =>
 							{
 								try
 								{
-									// TODO: if `connected.Count` gets too high, break the loop for the older inactive clients
-
-									while (true)
+									while (thisClient.Client.IsBound)
 									{
 										// here we receive messages from the remote we tunnel to
-										var upstreamDatagram = await thisClient.ReceiveAsync();
+										UdpReceiveResult upstreamDatagram;
+										try
+										{
+											upstreamDatagram = await thisClient.ReceiveAsync();
+										}
+										catch (ObjectDisposedException) {
+											break;
+										}
 
 										if (debug) {
 											Debug.PrintReceived("UDP", upstreamDatagram.RemoteEndPoint, thisPort, upstreamDatagram.Buffer, 0, upstreamDatagram.Buffer.Length);
@@ -70,12 +78,17 @@ namespace QuickTunnel
 										#pragma warning restore 4014
 									}
 								}
+								catch (Exception e)
+								{
+									Debug.PrintError(e, "from udp client task");
+								}
 								finally
 								{
 									try
 									{
-										((IDisposable)thisClient).Dispose();
+										thisClient.Close();
 									}
+									catch (Exception) { }
 									finally
 									{
 										lock (lockme)
@@ -88,9 +101,33 @@ namespace QuickTunnel
 						}
 						else
 						{
-							thisClient = thisConnection.Item1;
-							thisPort = thisConnection.Item2;
+							thisClient = thisConnection.client;
+							thisPort = thisConnection.port;
+							cancelLastTimeout = thisConnection.cancelLastTimeout;
 						}
+
+						// reset the disconnection timeout every time a message is received
+						if (cancelLastTimeout.Value != null)
+							cancelLastTimeout.Value.Cancel();
+
+						// disconnect after `timeout`
+						cancelLastTimeout.Value = new CancellationTokenSource();
+						Task.Delay(timeout, cancelLastTimeout.Value.Token).ContinueWith(task => {
+							
+							try
+							{
+								thisClient.Close();
+							}
+							catch (Exception) { }
+							finally
+							{
+								lock (lockme)
+								{
+									connected.Remove(remoteAddress);
+								}
+							}
+
+						}, TaskContinuationOptions.OnlyOnRanToCompletion);
 					}
 
 					if (debug)
@@ -109,12 +146,9 @@ namespace QuickTunnel
 			// stop the main socket
 			try
 			{
-				((IDisposable)client).Dispose();
+				client.Close();
 			}
-			catch (Exception e)
-			{
-				Console.Error.WriteLine(e);
-			}
+			catch (Exception) { }
 
 			List<UdpClient> clients;
 			lock (lockme)
@@ -127,12 +161,9 @@ namespace QuickTunnel
 			{
 				try
 				{
-					((IDisposable)client).Dispose();
+					client.Close();
 				}
-				catch (Exception e)
-				{
-					Console.Error.WriteLine(e);
-				}
+				catch (Exception) { }
 			}
 		}
 	}
